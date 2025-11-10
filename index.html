@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Student Management</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <div class="wrap">
+    <header class="header">
+      <h1>Student Management System</h1>
+      <div class="header-right">
+        <button id="refreshBtn" class="btn ghost">Refresh</button>
+        <button id="exportBtn" class="btn ghost">Export CSV</button>
+      </div>
+    </header>
+
+    <main class="main-grid">
+      <section class="card form-card">
+        <h2>Add Student</h2>
+        <form id="addForm" autocomplete="off">
+          <div class="row"><label>Roll</label><input id="roll" required></div>
+          <div class="row"><label>Name</label><input id="name" required></div>
+          <div class="row"><label>Email</label><input id="email" type="email"></div>
+          <div class="row"><label>Department</label><input id="department"></div>
+          <div class="row"><label>Year</label><input id="year" type="number" min="1" max="10" value="1"></div>
+          <div class="controls">
+            <button type="submit" class="btn primary">Add Student</button>
+            <button type="button" id="clearBtn" class="btn ghost">Clear</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card list-card">
+        <div class="list-header">
+          <h2>Students</h2>
+          <div class="search-wrap">
+            <input id="search" placeholder="Search roll, name, department...">
+            <button id="searchBtn" class="btn ghost">Search</button>
+          </div>
+        </div>
+        <div id="tableWrap" class="table-wrap"></div>
+      </section>
+    </main>
+
+    <footer class="footer"><small>Demo app — do not expose publicly without security.</small></footer>
+  </div>
+
+  <div id="modal" class="modal hidden" aria-hidden="true">
+    <div class="modal-card">
+      <h3>Edit Student (<span id="modalRoll"></span>)</h3>
+      <div class="modal-body">
+        <label>Name</label><input id="editName">
+        <label>Email</label><input id="editEmail">
+        <label>Department</label><input id="editDept">
+        <label>Year</label><input id="editYear" type="number" min="1" max="10">
+      </div>
+      <div class="modal-actions">
+        <button id="cancelEdit" class="btn ghost">Cancel</button>
+        <button id="saveEdit" class="btn primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+<script>
+/* Vanilla JS UI for the API at /api/students */
+const apiBase = '/api/students';
+const $ = id => document.getElementById(id);
+const toast = $('toast');
+const modal = $('modal');
+const modalRoll = $('modalRoll');
+let editingRoll = null;
+
+function showToast(msg, time = 3000){
+  toast.textContent = msg; toast.classList.remove('hidden');
+  clearTimeout(toast._t); toast._t = setTimeout(()=> toast.classList.add('hidden'), time);
+}
+
+async function fetchJSON(url, opts){
+  const res = await fetch(url, opts);
+  const data = await res.json().catch(()=> null);
+  if (!res.ok) throw {status: res.status, data};
+  return data;
+}
+
+async function loadStudents(){
+  try {
+    const list = await fetchJSON(apiBase);
+    renderTable(list);
+  } catch (err) { showToast('Cannot load students'); console.error(err); }
+}
+
+function renderTable(students){
+  const wrap = $('tableWrap');
+  if (!students || students.length === 0){ wrap.innerHTML = '<p class="muted">No students found.</p>'; return; }
+  let html = '<table class="table"><thead><tr><th>Roll</th><th>Name</th><th>Email</th><th>Dept</th><th>Year</th><th>Actions</th></tr></thead><tbody>';
+  students.forEach(s => {
+    html += `<tr>
+      <td>${escapeHtml(s.roll)}</td>
+      <td>${escapeHtml(s.name)}</td>
+      <td>${escapeHtml(s.email||'')}</td>
+      <td>${escapeHtml(s.department||'')}</td>
+      <td>${s.year||''}</td>
+      <td class="actions">
+        <button class="btn ghost small" onclick="onEdit('${encodeURIComponent(s.roll)}')">Edit</button>
+        <button class="btn danger small" onclick="onDelete('${encodeURIComponent(s.roll)}')">Delete</button>
+      </td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+}
+
+function escapeHtml(str){ return String(str||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
+
+/* Add */
+$('addForm').addEventListener('submit', async function(e){
+  e.preventDefault();
+  const payload = {
+    roll: $('roll').value.trim(),
+    name: $('name').value.trim(),
+    email: $('email').value.trim(),
+    department: $('department').value.trim(),
+    year: Number($('year').value) || 1
+  };
+  if (!payload.roll || !payload.name) return showToast('Roll and name required');
+  try {
+    const res = await fetchJSON(apiBase, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    showToast('Added: ' + res.name);
+    $('addForm').reset();
+    loadStudents();
+  } catch (err) {
+    if (err.status === 409) showToast(err.data?.error || 'Already exists'); else showToast('Add failed');
+    console.error(err);
+  }
+});
+
+$('clearBtn').addEventListener('click', ()=> $('addForm').reset());
+$('refreshBtn').addEventListener('click', loadStudents);
+
+/* Search */
+$('searchBtn').addEventListener('click', ()=> {
+  const q = $('search').value.trim();
+  if (!q) return loadStudents();
+  searchBy(q);
+});
+$('search').addEventListener('keydown', (e)=> { if (e.key === 'Enter') $('searchBtn').click(); });
+
+async function searchBy(q){
+  try {
+    const res = await fetchJSON(apiBase + '/' + encodeURIComponent(q));
+    renderTable([res]);
+  } catch (err) {
+    if (err.status === 404) $('tableWrap').innerHTML = '<p class="muted">Student not found.</p>';
+    else { showToast('Search error'); console.error(err); }
+  }
+}
+
+/* Delete */
+async function onDelete(encRoll){
+  const roll = decodeURIComponent(encRoll);
+  if (!confirm('Delete ' + roll + ' ?')) return;
+  try {
+    await fetchJSON(apiBase + '/' + encRoll, { method:'DELETE' });
+    showToast('Deleted ' + roll);
+    loadStudents();
+  } catch (err) { showToast('Delete failed'); console.error(err); }
+}
+
+/* Edit */
+async function onEdit(encRoll){
+  try {
+    const s = await fetchJSON(apiBase + '/' + encRoll);
+    editingRoll = s.roll;
+    modalRoll.textContent = s.roll;
+    $('editName').value = s.name || '';
+    $('editEmail').value = s.email || '';
+    $('editDept').value = s.department || '';
+    $('editYear').value = s.year || 1;
+    modal.classList.remove('hidden'); modal.setAttribute('aria-hidden','false');
+  } catch (err) { showToast('Cannot fetch student'); console.error(err); }
+}
+
+$('cancelEdit').addEventListener('click', ()=> { modal.classList.add('hidden'); editingRoll = null; });
+$('saveEdit').addEventListener('click', async ()=> {
+  if (!editingRoll) return;
+  const payload = { name: $('editName').value.trim(), email: $('editEmail').value.trim(), department: $('editDept').value.trim(), year: Number($('editYear').value) || 1 };
+  try {
+    const res = await fetchJSON(apiBase + '/' + encodeURIComponent(editingRoll), { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    showToast('Updated: ' + res.name);
+    modal.classList.add('hidden'); editingRoll = null;
+    loadStudents();
+  } catch (err) { showToast('Update failed'); console.error(err); }
+});
+
+/* CSV export (server-side URL) */
+$('exportBtn').addEventListener('click', () => {
+  // navigate to the export URL which returns a downloadable CSV
+  window.location.href = '/api/students/export';
+});
+
+/* init */
+loadStudents();
+</script>
+</body>
+</html>
